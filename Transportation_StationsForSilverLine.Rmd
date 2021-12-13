@@ -1,0 +1,279 @@
+---
+title: "Isocrones of Dulles Metro Stations"
+author: "Mike Lidwin"
+date: "13 December 2021"
+output: 
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float: true
+---
+
+``` {r, message = FALSE}
+
+#Load JAVA
+options(java.parameters = "-Xmx3G")
+
+#Load Referenced Libraries
+library(r5r)
+library(osmextract)
+library(tidyverse)
+library(sf)
+library(ggthemes)
+library(ggspatial)
+library(tigris)
+library(wesanderson)
+library(tidytransit)
+library(RColorBrewer)
+library(metro)
+
+```
+
+```{r, message = FALSE}
+##Create a directory to save my network data to
+#dir.create("networks")
+#
+##Download GTFS data and save it to the above trajectory
+#download.file("https://transitfeeds.com/p/mbta/64/latest/download", file.path("networks","BostonMBTA_GTFS.zip"), mode = "wb", quiet=TRUE)
+```
+
+```{r, message = FALSE}
+virginia_file <- oe_match("Virginia")
+```
+
+
+``` {r, message = FALSE}
+virginia_streets <- oe_read(virginia_file$url, 
+                   provider = "openstreetmap_fr", 
+                   download_directory = "networks", 
+                   layer = "lines", 
+                   quiet = TRUE) %>%
+  filter(!is.na(highway))
+
+```
+
+
+```{r, message = FALSE}
+#FIPS  Code - 51 is for Virginia
+county_number <- c("51059", "51107")
+county_name <- c("Fairfax","Loudoun")
+
+fairfax <- counties("51059")%>%
+  filter(NAME == "Fairfax") %>%
+  st_transform(crs = st_crs(virginia_streets))
+
+
+county_boundary <- counties(county_number)%>%
+  filter(NAME == county_name) %>%
+  st_transform(crs = st_crs(virginia_streets))
+
+ggplot(county_boundary) +
+  geom_sf()
+```
+
+
+```{r}
+#https://spatialreference.org/ref/epsg/2283/
+VA_state_plane <- "+proj=lcc +lat_1=39.2 +lat_2=38.03333333333333 +lat_0=37.66666666666666 +lon_0=-78.5 +x_0=3500000.0001016 +y_0=2000000.0001016 +ellps=GRS80 +datum=NAD83 +to_meter=0.3048006096012192 +no_defs "
+
+virginia_streets <- virginia_streets %>%
+  st_transform(VA_state_plane)
+
+va_county <- county_boundary %>%
+  st_transform(VA_state_plane)
+
+virginia_streets <- virginia_streets[va_county,]
+
+ggplot(virginia_streets) +
+  geom_sf()
+
+```
+
+
+```{r, message = FALSE}
+
+ggplot() +
+  geom_sf(
+    data = va_county, 
+    fill = "aquamarine", 
+    color = "orange",
+    alpha = .1) + 
+  geom_sf(
+    data = virginia_streets, 
+    alpha = 0.2) + 
+  theme_map()
+
+```
+
+
+``` {r, message = FALSE, warning = FALSE}
+
+DCMP_stations <- st_read("stations.geojson", quiet=TRUE)
+
+ggplot() +
+  geom_sf(
+    data = va_county, 
+    fill = "#758B66", 
+    color = NA, 
+    alpha = 0.5) +
+  geom_sf(
+    data = DCMP_stations) +
+  theme_map()
+
+```
+
+```{r, include = FALSE}
+#Set up a grid from Chelsea
+grid <- st_sf(st_make_grid(va_county, square = FALSE,
+                           n = c(100, 100),
+                           what = "polygons")) %>% 
+  st_filter(va_county)
+
+colnames(grid) <- "geometry"
+st_geometry(grid) <- "geometry"
+
+grid <- grid %>% 
+  mutate(id = seq(1, length(grid$geometry), by = 1))
+
+
+ggplot() +
+  geom_sf(data = grid)+
+  theme_map()
+
+```
+
+``` {r, message = FALSE, warning = FALSE}
+
+#Make the grid into Point Data
+grid_points <- st_centroid(grid)
+
+ggplot() +
+  geom_sf(data = grid_points, size = 0.25) +
+  geom_sf(data = DCMP_stations, color = "yellow1") +
+  theme_map()
+```
+
+
+```{r ttm, warning = FALSE}
+
+#set up r5r
+r5r_core <- setup_r5("networks", verbose = FALSE)
+```
+
+``` {r, message = FALSE}
+#Calculate travel time matrix. Travel time is calculated through lat/long data NOT spatially projected data. So, origins and destinations point data must be converted back to lat/long format
+
+DCMP_stations_mut <- DCMP_stations %>% 
+  mutate(id = seq(1, length(DCMP_stations$geometry), by = 1))
+
+ttm <- travel_time_matrix(r5r_core = r5r_core,
+                          origins = st_transform (x = DCMP_stations_mut, crs = "WGS84"),
+                          destinations = st_transform(x = grid_points, crs = "WGS84"),
+                          mode = c("WALK", "TRANSIT"),
+                          #mode = "WALK",
+                          departure_datetime = as.POSIXct("15-11-2021 14:00:00",
+                                 format = "%d-%m-%Y %H:%M:%S"),
+                          max_walk_dist = 1000,
+                          max_trip_duration = 480,
+                          verbose = FALSE)
+```
+
+```{r, message = FALSE}
+
+tt_wide <- ttm %>%
+  pivot_wider(names_from = fromId, 
+              names_prefix = "from", values_from = travel_time) %>%
+  rename(id = toId) %>% 
+  merge(grid) %>%
+  replace(is.na(.), 999) %>%
+  rowwise() %>%
+  mutate(from_any = min(c_across(starts_with("from")), na.rm = TRUE))
+
+st_geometry(tt_wide) <- "geometry"
+```
+
+
+```{r, message = FALSE}
+ggplot(virginia_streets) +
+  geom_sf(data = va_county,
+           color = "black",
+           fill = NA) +
+  geom_sf(data = tt_wide, 
+          aes(fill = from_any), 
+          color = NA,
+          alpha = .9) +
+  geom_sf(data = DCMP_stations_mut, alpha = 0.75, color = "pink") +
+  scale_fill_gradientn(colors = wes_palette(name = "Zissou1", n= 3, type = "continuous"),
+        name = "Walking or Transit Travel Time to\nthe nearest money transfer \nlocation (minutes)",
+        position = "right") +
+  coord_sf(crs = VA_state_plane) +
+  
+  theme_map()+
+  theme(legend.position = "right")
+
+```
+
+
+```{r, message = FALSE}
+iso_pallete <- brewer.pal(n = 8, name = 'RdBu')
+
+
+iso10min <- tt_wide[tt_wide$from_any < 11,] %>%
+  st_union()
+
+iso20min <- tt_wide[tt_wide$from_any < 21,] %>%
+  st_union()
+
+iso30min <- tt_wide[tt_wide$from_any < 31,] %>%
+  st_union()
+
+ggplot(va_county) +
+  geom_sf(data = iso30min, 
+          aes(fill = "Area within 30 min"), 
+          color = NA) +
+  geom_sf(data = iso20min, 
+          aes(fill = "Area within 20 min"), 
+          color = NA) +
+  geom_sf(data = iso10min, 
+          aes(fill = "Area within 10 min"), 
+          color = NA) +
+  geom_sf(alpha = 0.5) +
+  scale_fill_manual(values = c(iso_pallete[4], 
+                               iso_pallete[2],
+                               iso_pallete[1]),
+        name = "Walking Travel\ntime to the\nnearest DCMP station\n location (minutes)") +
+  coord_sf(crs = VA_state_plane) +
+  theme_map()+
+  theme(legend.position = "right")
+
+```
+#AS FAR AS I GOT ---------------------------
+
+
+```{r, message = FALSE}
+
+Mass_transit <- read_gtfs(file.path("networks", "gtfs.zip"))
+
+#filter out only Chelsea stops so it won't return NAs for lat and lon
+Chelsea_transit_stops <- subset(Mass_transit$stops, Mass_transit$stops$municipality == "Chelsea")
+
+transit_stops <- st_as_sf(Chelsea_transit_stops, 
+                          coords = c("stop_lon", "stop_lat"),
+                          crs =st_crs(grid))
+
+ggplot() +
+  geom_sf(data = grid, fill = "gray", color = NA) +
+  geom_sf(data = transit_stops, fill = "blue")
+
+transit_grid <- grid %>%
+  mutate(num_stops = lengths(st_covers(grid, transit_stops)))
+
+transit_points <- st_centroid(transit_grid)
+
+ggplot(transit_points) +
+  geom_sf(aes(color = as.character(num_stops))) +
+  scale_color_manual(values = c("lightgray", "green", "blue", "darkblue", "purple"), 
+                    name = "Number of\ntransit stops") +
+  theme_void()
+```
