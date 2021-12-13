@@ -35,7 +35,7 @@ library(metro)
 #dir.create("networks")
 #
 ##Download GTFS data and save it to the above trajectory
-#download.file("https://transitfeeds.com/p/mbta/64/latest/download", file.path("networks","BostonMBTA_GTFS.zip"), mode = "wb", quiet=TRUE)
+#download.file("https://transitfeeds.com/p/wmata/75/latest/download", file.path("networks","DullesWMATA_GTFS.zip"), mode = "wb", quiet=TRUE)
 ```
 
 ```{r, message = FALSE}
@@ -205,7 +205,7 @@ ggplot(virginia_streets) +
           alpha = .9) +
   geom_sf(data = DCMP_stations_mut, alpha = 0.75, color = "pink") +
   scale_fill_gradientn(colors = wes_palette(name = "Zissou1", n= 3, type = "continuous"),
-        name = "Walking or Transit Travel Time to\nthe nearest money transfer \nlocation (minutes)",
+        name = "Walking or Transit Travel Time to\nthe nearest Silver Line \nstation (minutes)",
         position = "right") +
   coord_sf(crs = VA_state_plane) +
   
@@ -248,17 +248,16 @@ ggplot(va_county) +
   theme(legend.position = "right")
 
 ```
+
+
 #AS FAR AS I GOT ---------------------------
 
 
 ```{r, message = FALSE}
 
-Mass_transit <- read_gtfs(file.path("networks", "gtfs.zip"))
+WMATA_transit <- read_gtfs(file.path("networks", "DullesWMATA_GTFS.zip"))
 
-#filter out only Chelsea stops so it won't return NAs for lat and lon
-Chelsea_transit_stops <- subset(Mass_transit$stops, Mass_transit$stops$municipality == "Chelsea")
-
-transit_stops <- st_as_sf(Chelsea_transit_stops, 
+transit_stops <- st_as_sf(WMATA_transit, 
                           coords = c("stop_lon", "stop_lat"),
                           crs =st_crs(grid))
 
